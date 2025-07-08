@@ -1,20 +1,15 @@
 import Image from "next/image"
 import { Award, Camera, Heart, Users } from "lucide-react"
+import profilePic from "../public/image.png"
 
 export default function AboutSection() {
-  const stats = [
-    { icon: Camera, label: "Photos Captured", value: "10,000+" },
-    { icon: Heart, label: "Happy Couples", value: "200+" },
-    { icon: Users, label: "Events Covered", value: "500+" },
-    { icon: Award, label: "Years Experience", value: "8+" },
-  ]
 
   return (
     <section id="about" className="py-20 px-4 bg-[#285943]">
       <div className="max-w-7xl mx-auto">
         <div className="grid lg:grid-cols-2 gap-16 items-center">
           <div>
-            <h2 className="font-playfair text-4xl md:text-5xl font-bold text-white mb-6">About Elena</h2>
+            <h2 className="font-playfair text-4xl md:text-5xl font-bold text-white mb-6">About Vara</h2>
             <div className="space-y-6 text-gray-300 text-lg leading-relaxed">
               <p>
                 With over 8 years of experience in photography, I specialize in capturing the authentic emotions and
@@ -31,22 +26,12 @@ export default function AboutSection() {
                 something beautiful together.
               </p>
             </div>
-
-            <div className="grid grid-cols-2 gap-6 mt-12">
-              {stats.map((stat, index) => (
-                <div key={index} className="text-center">
-                  <stat.icon className="w-8 h-8 text-gold mx-auto mb-2" />
-                  <div className="text-2xl font-bold text-white">{stat.value}</div>
-                  <div className="text-gray-400 text-sm">{stat.label}</div>
-                </div>
-              ))}
-            </div>
           </div>
 
           <div className="relative">
             <div className="relative overflow-hidden rounded-lg">
               <Image
-                src="/placeholder.svg?height=600&width=500"
+                src={profilePic}
                 alt="Elena Rodriguez - Photographer"
                 width={500}
                 height={600}

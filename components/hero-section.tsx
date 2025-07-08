@@ -45,7 +45,7 @@ export default function HeroSection() {
       {/* Content */}
       <div className="relative z-10 flex items-center justify-center h-full text-center px-4">
         <div className="max-w-4xl">
-          <h1 className="font-playfair text-5xl md:text-7xl font-bold text-white mb-6 text-shadow">Elena Rodriguez</h1>
+          <h1 className="font-playfair text-5xl md:text-7xl font-bold text-white mb-6 text-shadow">Vara Photing</h1>
           <p className="text-xl md:text-2xl text-gold mb-8 text-shadow">Capturing Moments That Last Forever</p>
           <p className="text-lg md:text-xl text-white/90 max-w-2xl mx-auto text-shadow">
             Professional photographer specializing in weddings, portraits, and life's most precious moments
