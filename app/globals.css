@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --gold: #d4af37;
+  --gold-light: #f4e4a6;
+  --gold-dark: #b8941f;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-black text-white;
+  }
+}
+
+@layer components {
+  .masonry-grid {
+    column-count: 1;
+    column-gap: 1rem;
+
+    @screen sm {
+      column-count: 2;
+    }
+
+    @screen md {
+      column-count: 3;
+    }
+
+    @screen lg {
+      column-count: 4;
+    }
+
+    @screen xl {
+      column-count: 5;
+    }
+  }
+
+  .masonry-item {
+    break-inside: avoid;
+    margin-bottom: 1rem;
+    display: inline-block;
+    width: 100%;
+  }
+}
+
+@layer utilities {
+  .text-shadow {
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+  }
+}
