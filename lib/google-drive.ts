@@ -17,6 +17,21 @@ if (!GOOGLE_DRIVE_API_KEY || !GOOGLE_DRIVE_FOLDER_ID) {
   console.warn("Google Drive API credentials not configured")
 }
 
+// Helper function to generate public Google Drive URLs
+function generateDriveImageUrl(fileId: string, size: 'thumbnail' | 'full' = 'full'): string {
+  if (size === 'thumbnail') {
+    // For thumbnails, use the uc endpoint with export=view and a size parameter
+    return `https://drive.google.com/uc?export=view&id=${fileId}&sz=w800-h600`
+  }
+  // For full-size images, use the standard uc endpoint
+  return `https://drive.google.com/uc?export=view&id=${fileId}`
+}
+
+// Alternative helper for different thumbnail sizes
+function generateThumbnailUrl(fileId: string, width: number = 800, height: number = 600): string {
+  return `https://drive.google.com/uc?export=view&id=${fileId}&sz=w${width}-h${height}`
+}
+
 // Enhanced delay function with exponential backoff
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -58,10 +73,8 @@ async function rateLimitedFetch(url: string, retries = 0): Promise<Response> {
 // Get just the first image thumbnail from a folder (any image from any subfolder)
 async function getFirstImageThumbnail(folderId: string): Promise<string | null> {
   const query = `'${folderId}' in parents and trashed = false`;
-  // ask for both thumbnailLink and webViewLink
-  const fields = encodeURIComponent(
-    "files(id,mimeType,thumbnailLink,webViewLink)"
-  );
+  // We only need the file ID to generate the proper URL
+  const fields = encodeURIComponent("files(id,mimeType)");
   const url = 
     `https://www.googleapis.com/drive/v3/files` +
     `?q=${encodeURIComponent(query)}` +
@@ -79,12 +92,8 @@ async function getFirstImageThumbnail(folderId: string): Promise<string | null> 
     // 1) look for a direct image
     for (const file of data.files || []) {
       if (file.mimeType.startsWith("image/")) {
-        // prefer a large thumbnail if available
-        if (file.thumbnailLink) {
-          return file.thumbnailLink.replace(/=s\d+/, "=s1600");
-        }
-        // otherwise use the webViewLink
-        return file.webViewLink || null;
+        // Generate proper Google Drive thumbnail URL
+        return generateDriveImageUrl(file.id, 'thumbnail');
       }
     }
 
@@ -97,12 +106,11 @@ async function getFirstImageThumbnail(folderId: string): Promise<string | null> 
       }
     }
   } catch (err) {
-    console.error(`Error fetching HQ image for folder ${folderId}:`, err);
+    console.error(`Error fetching image for folder ${folderId}:`, err);
   }
 
   return null;
 }
-
 
 export async function getFolders(): Promise<DriveFolder[]> {
   if (!GOOGLE_DRIVE_API_KEY || !GOOGLE_DRIVE_FOLDER_ID) return []
@@ -154,8 +162,9 @@ async function getImagesFromFolder(
   pageSize: number = 20
 ): Promise<{ images: DriveImage[]; nextPageToken?: string }> {
   const query = `'${folderId}' in parents and trashed = false`;
+  // We only need id, name, and mimeType - we'll generate URLs from the ID
   const fields = encodeURIComponent(
-    "nextPageToken,files(id,name,mimeType,webViewLink,thumbnailLink)"
+    "nextPageToken,files(id,name,mimeType)"
   );
   let url =
     `https://www.googleapis.com/drive/v3/files` +
@@ -185,11 +194,10 @@ async function getImagesFromFolder(
           id: file.id,
           name: file.name,
           mimeType: file.mimeType,
-          webViewLink: file.webViewLink,
-          thumbnailLink: file.thumbnailLink?.replace(/=s\d+/, "=s800") ?? "",
+          webViewLink: `https://drive.google.com/file/d/${file.id}/view`,
+          thumbnailLink: generateThumbnailUrl(file.id, 800, 600),
           folderName: "",
-          highQualityUrl:
-            file.thumbnailLink?.replace(/=s\d+/, "=s1600") ?? file.webViewLink,
+          highQualityUrl: generateDriveImageUrl(file.id, 'full'),
         });
       } else if (file.mimeType === "application/vnd.google-apps.folder") {
         subfolders.push(file.id);
