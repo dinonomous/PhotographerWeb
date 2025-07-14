@@ -1,261 +1,231 @@
-import type { DriveFolder, GalleryData, DriveImage } from "./types"
+import type { S3Folder, GalleryData, S3Image } from "./types"
+import { S3Client, ListObjectsV2Command } from "@aws-sdk/client-s3"
 
-const GOOGLE_DRIVE_API_KEY = process.env.GOOGLE_DRIVE_API_KEY
-const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID
-
-// Rate limiting configuration
-const RATE_LIMIT = {
-  delay: 100, // Base delay between requests (ms)
-  maxRetries: 3,
-  backoffMultiplier: 2,
-}
-
-console.debug("GOOGLE_DRIVE_API_KEY:", GOOGLE_DRIVE_API_KEY ? "set" : "not set")
-console.debug("GOOGLE_DRIVE_FOLDER_ID:", GOOGLE_DRIVE_FOLDER_ID ? "set" : "not set")
-
-if (!GOOGLE_DRIVE_API_KEY || !GOOGLE_DRIVE_FOLDER_ID) {
-  console.warn("Google Drive API credentials not configured")
-}
-
-// Helper function to generate public Google Drive URLs
-function generateDriveImageUrl(fileId: string, size: 'thumbnail' | 'full' = 'full'): string {
-  if (size === 'thumbnail') {
-    // For thumbnails, use the uc endpoint with export=view and a size parameter
-    return `https://drive.google.com/uc?export=view&id=${fileId}&sz=w800-h600`
+// Simple configuration
+const CONFIG = {
+  pagination: {
+    defaultPageSize: 20,
+    maxPageSize: 100,
+  },
+  s3: {
+    maxKeys: 100, // Keep this reasonable for pagination
   }
-  // For full-size images, use the standard uc endpoint
-  return `https://drive.google.com/uc?export=view&id=${fileId}`
-}
+} as const
 
-// Alternative helper for different thumbnail sizes
-function generateThumbnailUrl(fileId: string, width: number = 800, height: number = 600): string {
-  return `https://drive.google.com/uc?export=view&id=${fileId}&sz=w${width}-h${height}`
-}
+// Simple S3 client setup
+class S3ApiClient {
+  private static instance: S3ApiClient | null = null
+  private s3Client: S3Client
+  private bucketName: string
+  private cloudFrontDomain: string
 
-// Enhanced delay function with exponential backoff
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-// Rate-limited fetch wrapper
-async function rateLimitedFetch(url: string, retries = 0): Promise<Response> {
-  try {
-    await delay(RATE_LIMIT.delay * Math.pow(RATE_LIMIT.backoffMultiplier, retries))
-
-    const response = await fetch(url, {
-      headers: {
-        'Accept': 'application/json',
+  private constructor() {
+    this.bucketName = process.env.AWS_S3_BUCKET_NAME!
+    this.cloudFrontDomain = process.env.AWS_CLOUDFRONT_DOMAIN!
+    
+    this.s3Client = new S3Client({
+      region: process.env.AWS_REGION || 'us-east-1',
+      credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
       },
     })
+  }
 
-    if (response.status === 429) {
-      if (retries < RATE_LIMIT.maxRetries) {
-        console.warn(`Rate limited, retrying in ${RATE_LIMIT.delay * Math.pow(RATE_LIMIT.backoffMultiplier, retries + 1)}ms`)
-        return rateLimitedFetch(url, retries + 1)
+  static getInstance(): S3ApiClient {
+    if (!S3ApiClient.instance) {
+      S3ApiClient.instance = new S3ApiClient()
+    }
+    return S3ApiClient.instance
+  }
+
+  async listObjects(prefix: string, continuationToken?: string, maxKeys?: number): Promise<any> {
+    const command = new ListObjectsV2Command({
+      Bucket: this.bucketName,
+      Prefix: prefix,
+      MaxKeys: maxKeys || CONFIG.s3.maxKeys,
+      ContinuationToken: continuationToken,
+      Delimiter: '/', // This groups objects by "folder"
+    })
+
+    return await this.s3Client.send(command)
+  }
+
+  getCloudFrontUrl(key: string): string {
+    return `${this.cloudFrontDomain}/${key}`
+  }
+}
+
+// Utility functions
+function isImageFile(key: string): boolean {
+  const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg']
+  return imageExtensions.some(ext => key.toLowerCase().endsWith(ext))
+}
+
+function extractFolderName(prefix: string): string {
+  const parts = prefix.split('/').filter(Boolean)
+  return parts[parts.length - 1] || 'Root'
+}
+
+function getMimeType(key: string): string {
+  const ext = key.toLowerCase().split('.').pop()
+  const mimeTypes: { [key: string]: string } = {
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    bmp: 'image/bmp',
+    svg: 'image/svg+xml',
+  }
+  return mimeTypes[ext || ''] || 'application/octet-stream'
+}
+
+// Main API functions
+async function findHeroImage(folderPrefix: string): Promise<string | null> {
+  const client = S3ApiClient.getInstance()
+  
+  try {
+    // Try to find exact HERO image first with common extensions
+    const heroExtensions = ['jpg', 'jpeg', 'png', 'webp']
+    
+    for (const ext of heroExtensions) {
+      const heroKey = `${folderPrefix}hero.${ext}`
+      const heroResponse = await client.listObjects(heroKey, undefined, 1)
+      
+      if (heroResponse.Contents && heroResponse.Contents.length > 0) {
+        const foundKey = heroResponse.Contents[0].Key!
+        if (foundKey === heroKey) { // Exact match
+          return client.getCloudFrontUrl(foundKey)
+        }
       }
-      throw new Error('Rate limit exceeded after max retries')
     }
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
+    
+    // If no exact HERO match, get first image from folder (MaxKeys=1 for efficiency)
+    const imageResponse = await client.listObjects(folderPrefix, undefined, 1)
+    const firstImage = imageResponse.Contents?.find((obj: { Key?: string }) => 
+      obj.Key && isImageFile(obj.Key)
+    )
+    
+    if (firstImage) {
+      return client.getCloudFrontUrl(firstImage.Key!)
     }
-
-    return response
+    
+    return null
   } catch (error) {
-    if (retries < RATE_LIMIT.maxRetries) {
-      console.warn(`Request failed, retrying: ${error}`)
-      return rateLimitedFetch(url, retries + 1)
-    }
-    throw error
+    console.warn(`Error finding hero image for ${folderPrefix}:`, error)
+    return null
   }
 }
 
-// Get just the first image thumbnail from a folder (any image from any subfolder)
-async function getFirstImageThumbnail(folderId: string): Promise<string | null> {
-  const query = `'${folderId}' in parents and trashed = false`;
-  // We only need the file ID to generate the proper URL
-  const fields = encodeURIComponent("files(id,mimeType)");
-  const url = 
-    `https://www.googleapis.com/drive/v3/files` +
-    `?q=${encodeURIComponent(query)}` +
-    `&fields=${fields}` +
-    `&pageSize=10` +
-    `&key=${GOOGLE_DRIVE_API_KEY}`;
-
+export async function getFolders(parentPrefix: string = ''): Promise<S3Folder[]> {
+  const client = S3ApiClient.getInstance()
+  
   try {
-    // honor your rate‑limit delay
-    await delay(RATE_LIMIT.delay);
+    const response = await client.listObjects(parentPrefix)
+    const folders: S3Folder[] = []
 
-    const response = await rateLimitedFetch(url);
-    const data = await response.json();
-
-    // 1) look for a direct image
-    for (const file of data.files || []) {
-      if (file.mimeType.startsWith("image/")) {
-        // Generate proper Google Drive thumbnail URL
-        return generateDriveImageUrl(file.id, 'thumbnail');
-      }
-    }
-
-    // 2) if no images, dive one subfolder
-    for (const file of data.files || []) {
-      if (file.mimeType === "application/vnd.google-apps.folder") {
-        const nested = await getFirstImageThumbnail(file.id);
-        if (nested) return nested;
-        break; // only check the first subfolder
-      }
-    }
-  } catch (err) {
-    console.error(`Error fetching image for folder ${folderId}:`, err);
-  }
-
-  return null;
-}
-
-export async function getFolders(): Promise<DriveFolder[]> {
-  if (!GOOGLE_DRIVE_API_KEY || !GOOGLE_DRIVE_FOLDER_ID) return []
-
-  const folderUrl = `https://www.googleapis.com/drive/v3/files?q='${GOOGLE_DRIVE_FOLDER_ID}'+in+parents+and+mimeType='application/vnd.google-apps.folder'+and+trashed=false&fields=files(id,name)&orderBy=name&key=${GOOGLE_DRIVE_API_KEY}`
-
-  try {
-    const folderRes = await rateLimitedFetch(folderUrl)
-    const folderData = await folderRes.json()
-
-    const folders: DriveFolder[] = []
-
-    // Process folders sequentially to avoid rate limiting
-    for (const folder of folderData.files || []) {
-      try {
-        const thumbnailUrl = await getFirstImageThumbnail(folder.id)
-
+    // Process CommonPrefixes (folders)
+    if (response.CommonPrefixes) {
+      for (const prefix of response.CommonPrefixes) {
+        const folderName = extractFolderName(prefix.Prefix!)
+        const thumbnailUrl = await findHeroImage(prefix.Prefix!)
+        
         folders.push({
-          id: folder.id,
-          name: folder.name,
-          thumbnailUrl: thumbnailUrl || '',
-          imageCount: 0, // Remove image counting
-          createdTime: '' // Remove date info
-        })
-      } catch (error) {
-        console.error(`Error processing folder ${folder.name}:`, error)
-        // Still add folder even if thumbnail fails
-        folders.push({
-          id: folder.id,
-          name: folder.name,
-          thumbnailUrl: '',
-          imageCount: 0,
-          createdTime: ''
+          id: prefix.Prefix!,
+          name: folderName,
+          thumbnailUrl,
+          imageCount: 0, // Simplified - will add later
+          createdTime: new Date().toISOString(),
         })
       }
     }
-
+    
+    console.debug(folders)
     return folders
   } catch (error) {
-    console.error("Error fetching folders:", error)
+    console.error('Error fetching folders:', error)
     return []
   }
 }
 
-// Recursively get images from folder and subfolders with pagination
-async function getImagesFromFolder(
-  folderId: string,
-  pageToken?: string,
-  pageSize: number = 20
-): Promise<{ images: DriveImage[]; nextPageToken?: string }> {
-  const query = `'${folderId}' in parents and trashed = false`;
-  // We only need id, name, and mimeType - we'll generate URLs from the ID
-  const fields = encodeURIComponent(
-    "nextPageToken,files(id,name,mimeType)"
-  );
-  let url =
-    `https://www.googleapis.com/drive/v3/files` +
-    `?q=${encodeURIComponent(query)}` +
-    `&fields=${fields}` +
-    `&pageSize=${pageSize}` +
-    `&key=${GOOGLE_DRIVE_API_KEY}`;
-
-  if (pageToken) {
-    url += `&pageToken=${encodeURIComponent(pageToken)}`;
-  }
+export async function getFolderImages(
+  prefix: string,
+  continuationToken?: string,
+  pageSize: number = CONFIG.pagination.defaultPageSize
+): Promise<GalleryData> {
+  const client = S3ApiClient.getInstance()
 
   try {
-    // 💡 throttle before each fetch
-    await delay(RATE_LIMIT.delay);
+    console.log('Fetching images for:', { prefix, continuationToken, pageSize })
+    
+    // Make sure pageSize doesn't exceed maxKeys
+    const actualPageSize = Math.min(pageSize, CONFIG.pagination.maxPageSize)
+    
+    const response = await client.listObjects(prefix, continuationToken, actualPageSize)
+    const images: S3Image[] = []
 
-    const response = await rateLimitedFetch(url);
-    const data = await response.json();
-    console.debug("Drive response:", data);
+    console.log('S3 Response:', {
+      keyCount: response.KeyCount,
+      isTruncated: response.IsTruncated,
+      nextContinuationToken: response.NextContinuationToken,
+      contentsLength: response.Contents?.length
+    })
 
-    const images: DriveImage[] = [];
-    const subfolders: string[] = [];
-
-    for (const file of data.files || []) {
-      if (file.mimeType.startsWith("image/")) {
-        images.push({
-          id: file.id,
-          name: file.name,
-          mimeType: file.mimeType,
-          webViewLink: `https://drive.google.com/file/d/${file.id}/view`,
-          thumbnailLink: generateThumbnailUrl(file.id, 800, 600),
-          folderName: "",
-          highQualityUrl: generateDriveImageUrl(file.id, 'full'),
-        });
-      } else if (file.mimeType === "application/vnd.google-apps.folder") {
-        subfolders.push(file.id);
+    if (response.Contents) {
+      for (const obj of response.Contents) {
+        if (obj.Key && isImageFile(obj.Key)) {
+          const fileName = obj.Key.split('/').pop() || obj.Key
+          
+          images.push({
+            id: obj.Key,
+            name: fileName,
+            mimeType: getMimeType(obj.Key),
+            webViewLink: client.getCloudFrontUrl(obj.Key),
+            thumbnailLink: client.getCloudFrontUrl(obj.Key), // Same as webViewLink for now
+            folderName: extractFolderName(prefix),
+            highQualityUrl: client.getCloudFrontUrl(obj.Key),
+            size: obj.Size,
+            lastModified: obj.LastModified?.toISOString(),
+          })
+        }
       }
     }
 
-    if (data.nextPageToken) {
-      return { images, nextPageToken: data.nextPageToken };
+    const result: GalleryData = {
+      folder: { 
+        id: prefix, 
+        name: extractFolderName(prefix)
+      },
+      images,
+      nextPageToken: response.NextContinuationToken || undefined // Ensure undefined if null
     }
 
-    // if we still need more images, recurse—but also throttle between each subfolder
-    if (images.length < pageSize && subfolders.length) {
-      for (const subId of subfolders) {
-        // throttle before recursing
-        await delay(RATE_LIMIT.delay);
+    console.log('Returning result:', {
+      imagesCount: result.images.length,
+      nextPageToken: result.nextPageToken,
+      hasMore: !!result.nextPageToken
+    })
 
-        const subRes = await getImagesFromFolder(
-          subId,
-          undefined,
-          pageSize - images.length
-        );
-        images.push(...subRes.images);
-        if (images.length >= pageSize) break;
-      }
-    }
-
-    return { images, nextPageToken: undefined };
+    return result
   } catch (error) {
-    console.error(`Error fetching images from ${folderId}:`, error);
-    return { images: [], nextPageToken: undefined };
+    console.error('Error fetching images:', error)
+    return {
+      folder: { id: prefix, name: extractFolderName(prefix) },
+      images: [],
+      nextPageToken: undefined
+    }
   }
 }
 
-export async function getFolderImages(
-  folderId: string,
-  pageToken?: string,
-  pageSize: number = 20
-): Promise<GalleryData> {
+// Simple health check
+export async function healthCheck(): Promise<boolean> {
   try {
-    // Get folder info
-    const folderResponse = await rateLimitedFetch(
-      `https://www.googleapis.com/drive/v3/files/${folderId}?key=${GOOGLE_DRIVE_API_KEY}&fields=id,name`
-    )
-    const folderData = await folderResponse.json()
-
-    const result = await getImagesFromFolder(folderId, pageToken, pageSize)
-    console.debug(result.nextPageToken)
-
-    return {
-      folder: { id: folderId, name: folderData.name || "Gallery" },
-      images: result.images,
-      nextPageToken: result.nextPageToken
-    }
+    const client = S3ApiClient.getInstance()
+    await client.listObjects('', undefined, 1) // Just check 1 item
+    return true
   } catch (error) {
-    console.error("Error fetching images:", error)
-    return {
-      folder: { id: folderId, name: "Gallery" },
-      images: [],
-    }
+    console.error('Health check failed:', error)
+    return false
   }
 }

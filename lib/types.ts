@@ -1,20 +1,22 @@
 // types.ts
-export interface DriveImage {
-  id: string
+export interface S3Folder {
+  id: string // S3 prefix path
   name: string
-  webViewLink: string
-  thumbnailLink: string
-  highQualityUrl?: string // Higher quality image URL
-  mimeType: string
-  folderName?: string // For showing which subfolder the image is from
+  thumbnailUrl: string | null
+  imageCount: number
+  createdTime: string
 }
 
-export interface DriveFolder {
-  id: string
+export interface S3Image {
+  id: string // S3 object key
   name: string
-  thumbnailUrl: string
-  imageCount: number // Will be 0 (not used anymore)
-  createdTime: string // Will be empty string (not used anymore)
+  mimeType: string
+  webViewLink: string
+  thumbnailLink: string
+  folderName: string
+  highQualityUrl: string
+  size?: number
+  lastModified?: string
 }
 
 export interface GalleryData {
@@ -22,8 +24,28 @@ export interface GalleryData {
     id: string
     name: string
   }
-  images: DriveImage[]
-  nextPageToken?: string // Google's pagination token
+  images: S3Image[]
+  nextPageToken?: string
+}
+
+export interface S3Config {
+  bucketName: string
+  region: string
+  cloudFrontDomain: string
+  cloudFrontDistributionId?: string
+}
+
+export interface CacheConfig {
+  folderTTL: number
+  imageTTL: number
+  metadataTTL: number
+}
+
+export interface PaginationConfig {
+  defaultPageSize: number
+  maxPageSize: number
+  thumbnailSize: string
+  highQualitySize: string
 }
 
 export interface ContactForm {
